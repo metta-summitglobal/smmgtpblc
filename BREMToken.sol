@@ -7,6 +7,16 @@ import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 
+/**
+ * @title BREMToken
+ *
+ * Disclosure:
+ * - 77% of total supply is held in contract reserve
+ * - Reserve tokens are controlled by contract owner
+ * - Owner can transfer or burn reserve tokens at any time
+ * - No time-locks or vesting schedules are enforced on reserve
+ * - All reserve movements are logged via events for transparency
+ */
 contract BREMToken is
 Initializable,
 ERC20Upgradeable,
@@ -32,12 +42,17 @@ PausableUpgradeable
     address public marketingWallet;
     address public advisorWallet;
 
-    // Amount of tokens currently locked in reserve
-    uint256 public lockedBalance;
+    // Amount of tokens currently held in contract reserve (owner-controlled)
+    uint256 public reserveBalance;
 
-    // Events for state changes
-    event ReserveTransferred(address indexed recipient, uint256 amount, uint256 remainingLocked);
-    event ReserveBurned(uint256 amount, uint256 remainingLocked);
+    // Events for transparency
+    event ReserveTransferred(
+        address indexed recipient,
+        uint256 amount,
+        uint256 remainingReserve,
+        string purpose
+    );
+    event ReserveBurned(uint256 amount, uint256 remainingReserve, string reason);
     event ETHWithdrawn(address indexed owner, uint256 amount);
 
     /// @custom:oz-upgrades-unsafe-allow constructor
@@ -45,15 +60,6 @@ PausableUpgradeable
         _disableInitializers();
     }
 
-    /**
-     * @dev Initialize the contract with wallet addresses
-     * @param initialOwner The address that will own the contract
-     * @param _teamWallet Address for team allocation
-     * @param _communityWallet Address for community allocation
-     * @param _liquidityWallet Address for liquidity allocation
-     * @param _marketingWallet Address for marketing allocation
-     * @param _advisorWallet Address for advisor allocation
-     */
     function initialize(
         address initialOwner,
         address _teamWallet,
@@ -73,7 +79,6 @@ PausableUpgradeable
         __UUPSUpgradeable_init();
         __Pausable_init();
 
-        // Set wallet addresses
         teamWallet = _teamWallet;
         communityWallet = _communityWallet;
         liquidityWallet = _liquidityWallet;
@@ -86,39 +91,63 @@ PausableUpgradeable
         _mint(_liquidityWallet, LIQUIDITY_ALLOCATION);
         _mint(_marketingWallet, MARKETING_ALLOCATION);
         _mint(_advisorWallet, ADVISOR_ALLOCATION);
-        // Mint reserve to contract or specified wallet (locked)
-        _mint(address(this), RESERVE_ALLOCATION);
 
-        lockedBalance = RESERVE_ALLOCATION;
+        // Mint reserve to contract
+        _mint(address(this), RESERVE_ALLOCATION);
+        reserveBalance = RESERVE_ALLOCATION;
     }
 
     /**
-     * @dev Returns current locked reserve balance
+     * @dev Returns current reserve balance
      */
-    function getLockedBalance() public view returns (uint256) {
-        return lockedBalance;
+    function getReserveBalance() public view returns (uint256) {
+        return reserveBalance;
     }
 
     /**
      * @dev Transfer reserve tokens to a specific address
      * @param recipient Address to receive tokens
      * @param amount Amount of tokens to transfer
+     * @param purpose Reason for transfer (for transparency)
      */
-    function transferReserve(address recipient, uint256 amount) external onlyOwner whenNotPaused {
+    function transferReserve(
+        address recipient,
+        uint256 amount,
+        string calldata purpose
+    ) external onlyOwner whenNotPaused {
         require(recipient != address(0), "Invalid recipient");
         require(amount > 0, "Amount must be greater than 0");
-        require(lockedBalance >= amount, "Insufficient locked balance");
+        require(reserveBalance >= amount, "Insufficient reserve balance");
+        require(bytes(purpose).length > 0, "Purpose required for transparency");
 
-        lockedBalance -= amount;
+        reserveBalance -= amount;
         _transfer(address(this), recipient, amount);
 
-        emit ReserveTransferred(recipient, amount, lockedBalance);
+        emit ReserveTransferred(recipient, amount, reserveBalance, purpose);
+    }
+
+    /**
+     * @dev Burn tokens from contract's reserve supply (owner only)
+     * @param amount Amount to burn from reserve
+     * @param reason Reason for burning (for transparency)
+     */
+    function burnReserve(
+        uint256 amount,
+        string calldata reason
+    ) external onlyOwner whenNotPaused {
+        require(amount > 0, "Amount must be greater than 0");
+        require(reserveBalance >= amount, "Insufficient reserve balance");
+        require(bytes(reason).length > 0, "Reason required for transparency");
+
+        reserveBalance -= amount;
+        _burn(address(this), amount);
+
+        emit ReserveBurned(amount, reserveBalance, reason);
     }
 
     function withdrawETH() external onlyOwner {
         uint256 balance = address(this).balance;
         payable(owner()).transfer(balance);
-
         emit ETHWithdrawn(owner(), balance);
     }
 
@@ -138,21 +167,6 @@ PausableUpgradeable
         return 18;
     }
 
-    /**
-     * @dev Burn tokens from contract's locked reserve supply (owner only)
-     * @param amount Amount to burn from locked supply
-     */
-    function burn(uint256 amount) public onlyOwner whenNotPaused {
-        require(amount > 0, "Amount must be greater than 0");
-        require(lockedBalance >= amount, "Insufficient locked balance");
-
-        lockedBalance -= amount;
-        _burn(address(this), amount);
-
-        emit ReserveBurned(amount, lockedBalance);
-    }
-
-    // Override required by Solidity for pausable transfers
     function _update(address from, address to, uint256 value)
     internal
     override
